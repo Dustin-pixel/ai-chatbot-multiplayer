@@ -1,0 +1,53 @@
+[
+  {
+    "id": "venice-rp",
+    "label": "Venice Role-Play Uncensored",
+    "type": "openai",
+    "baseUrl": "https://api.venice.ai/api/v1",
+    "apiKeyEnv": "VENICE_API_KEY",
+    "model": "venice-uncensored-role-play",
+    "adultContent": true,
+    "enabled": true,
+    "extraBody": { "venice_parameters": { "include_venice_system_prompt": false } }
+  },
+  {
+    "id": "venice-general",
+    "label": "Venice Uncensored (general)",
+    "type": "openai",
+    "baseUrl": "https://api.venice.ai/api/v1",
+    "apiKeyEnv": "VENICE_API_KEY",
+    "model": "venice-uncensored",
+    "adultContent": true,
+    "enabled": true,
+    "extraBody": { "venice_parameters": { "include_venice_system_prompt": false } }
+  },
+  {
+    "id": "local",
+    "label": "Local model (Ollama / llama.cpp / vLLM)",
+    "type": "openai",
+    "baseUrl": "http://localhost:11434/v1",
+    "apiKeyEnv": null,
+    "model": "REPLACE-WITH-YOUR-MODEL-NAME",
+    "adultContent": true,
+    "enabled": false
+  },
+  {
+    "id": "openrouter",
+    "label": "OpenRouter (any model)",
+    "type": "openai",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "apiKeyEnv": "OPENROUTER_API_KEY",
+    "model": "REPLACE/WITH-MODEL-ID",
+    "adultContent": false,
+    "enabled": false
+  },
+  {
+    "id": "claude",
+    "label": "Claude (non-explicit scenes only)",
+    "type": "anthropic",
+    "apiKeyEnv": "ANTHROPIC_API_KEY",
+    "model": "claude-sonnet-5-5",
+    "adultContent": false,
+    "enabled": false
+  }
+]

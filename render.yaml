@@ -1,0 +1,21 @@
+# Render Blueprint: New > Blueprint > pick this repo. You'll be asked for VENICE_API_KEY.
+# Persistent disks need a paid instance type on Render (check current pricing).
+services:
+  - type: web
+    name: shared-realms
+    runtime: docker
+    dockerContext: ./server
+    dockerfilePath: ./server/Dockerfile
+    plan: starter
+    healthCheckPath: /health
+    disk:
+      name: realms-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: VENICE_API_KEY
+        sync: false
+      - key: DEFAULT_MODEL
+        value: venice-rp
+      - key: DB_PATH
+        value: /data/realms.db

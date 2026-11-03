@@ -1,0 +1,14 @@
+{
+  "name": "shared-realms-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Multiplayer AI dungeon master backend. Zero npm dependencies: needs Node >= 22.18.",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/index.ts",
+    "dev": "node --watch --disable-warning=ExperimentalWarning src/index.ts",
+    "test": "ENABLE_MOCK=1 DEFAULT_MODEL=mock TURNS_PER_MINUTE=30 DB_PATH=:memory: node --disable-warning=ExperimentalWarning test/smoke.ts",
+    "typecheck": "tsc --noEmit"
+  }
+}
