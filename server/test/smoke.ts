@@ -225,6 +225,101 @@ try {
     assert.equal(getCharacter(cD)!.summary, 'Mock memory summary.');
   });
 
+  // ------------------------------------------------------------------ worlds from stories
+  const tW = await newPlayer('Wren');
+  let world: J = null;
+  let suggestion: J = null;
+  const hubId = () => world.id as string;
+
+  await test('builds a world from a story: capped at mature, repaired map, share code', async () => {
+    const r = await api('POST', '/worlds', { reference: 'Test Franchise' }, tW);
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    world = r.json;
+    assert.equal(world.name, 'Test Franchise Realm');
+    assert.equal(world.maxRating, 'mature', 'generated worlds must never allow adult scenes');
+    assert.match(world.code, /^[A-Z2-9]{6}$/);
+    assert.equal(world.statLabels.might.label, 'Power');
+    assert.ok(world.mine);
+  });
+
+  await test('unknown stories need notes; four builds in a minute are refused', async () => {
+    const unknown = await api('POST', '/worlds', { reference: 'Unknown Story' }, tW);
+    assert.equal(unknown.status, 422);
+    const withNotes = await api('POST', '/worlds', { reference: 'Unknown Story', notes: 'A seaside village where every villager hides a small, odd talent they are ashamed of.' }, tW);
+    assert.equal(withNotes.status, 200, JSON.stringify(withNotes.json));
+    assert.equal((await api('POST', '/worlds', { reference: 'Another' }, tW)).status, 429);
+    assert.equal((await api('POST', '/worlds', { reference: '' }, tW)).status, 400);
+  });
+
+  await test('advisor normalises stats to 6 and caps abilities/items', async () => {
+    const r = await api('POST', `/worlds/${hubId()}/suggest`, { concept: 'a calm swordsman with a dangerous secret' }, tW);
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    suggestion = r.json;
+    const vals = Object.values(suggestion.stats) as number[];
+    assert.equal(vals.reduce((a, b) => a + b, 0), 6);
+    assert.ok(vals.every((v) => Number.isInteger(v) && v >= 0 && v <= 3));
+    assert.equal(suggestion.abilities.length, 3);
+    assert.ok(suggestion.abilities.every((a: J) => a.limit.length > 0), 'every ability must carry a limit');
+    assert.equal(suggestion.items.length, 3);
+    assert.equal((await api('POST', `/worlds/${hubId()}/suggest`, { concept: 'x' }, tW)).status, 400);
+  });
+
+  let cW = '';
+  await test('character starts at the world hub with abilities; map was repaired', async () => {
+    const r = await api('POST', '/characters', { worldId: hubId(), name: 'Sora', concept: 'calm swordsman', stats: suggestion.stats, abilities: [...suggestion.abilities, suggestion.abilities[0], suggestion.abilities[0]], items: suggestion.items }, tW);
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    cW = r.json.character.id;
+    assert.equal(r.json.world.id, hubId());
+    assert.equal(r.json.location.name, 'Academy Gate');
+    assert.deepEqual(r.json.exits.map((e: J) => e.name).sort(), ['Cellar', 'Courtyard'], 'stranded cellar must be linked to the hub, bad exit dropped');
+    assert.equal(r.json.character.abilities.length, 3);
+    assert.deepEqual(r.json.character.inventory, suggestion.items);
+    assert.match(r.json.events[0].text, /Welcome to Test Franchise Realm/);
+    const courtyard = r.json.exits.find((e: J) => e.name === 'Courtyard');
+    const m = await api('POST', `/characters/${cW}/turn`, { action: `go to ${courtyard.id}`, since: 0 }, tW);
+    assert.equal(m.json.scene.location.name, 'Courtyard');
+    assert.deepEqual(m.json.scene.exits.map((e: J) => e.name).sort(), ['Academy Gate', 'Library'], 'one-way exit must be made two-way');
+    assert.ok(m.json.scene.npcs.some((n: J) => n.name === 'Sensei'));
+    const back = await api('POST', `/characters/${cW}/turn`, { action: 'go to ' + m.json.scene.exits.find((e: J) => e.name === 'Academy Gate').id, since: 0 }, tW);
+    assert.ok(back.json.scene.npcs.some((n: J) => n.name === 'Ghost'), 'NPC placed in a missing room falls back to the hub');
+  });
+
+  await test('narrator is given the world rules, labels, ability limits and the minors safeguard', async () => {
+    await api('POST', `/characters/${cW}/turn`, { action: 'I look around' }, tW);
+    const { system, user } = lastNarration();
+    assert.match(system, /Dungeon Master of "Test Franchise Realm"/);
+    assert.match(system, /inspired by another story[\s\S]*minor/);
+    assert.match(user, /WORLD RULES: Powers cost stamina\./);
+    assert.match(user, /Power \+\d, Technique \+\d, Cunning \+\d, Presence \+\d/);
+    assert.match(user, /ABILITIES \(honour the limits\): Shadow Step: .* LIMIT: Only in dim light\./);
+  });
+
+  await test('even when everyone opts in, a story-based world stays mature', async () => {
+    const tX = await newPlayer('Xan');
+    const byCode = await api('GET', `/worlds/by-code/${world.code.toLowerCase()}`, undefined, tX);
+    assert.equal(byCode.status, 200);
+    const cX = (await api('POST', '/characters', { worldId: byCode.json.id, name: 'Xander', concept: 'new student', stats: STATS }, tX)).json.character.id;
+    await api('PATCH', '/players/me/settings', { adultContent: true }, tX);
+    await api('PATCH', '/players/me/settings', { adultContent: true }, tW);
+    const scene = (await api('GET', `/characters/${cX}/scene`, undefined, tX)).json;
+    assert.deepEqual(scene.present.map((p: J) => p.name), ['Sora']);
+    assert.equal(scene.rating, 'mature');
+    assert.equal(scene.world.maxRating, 'mature');
+    const t = await api('POST', `/characters/${cX}/turn`, { action: 'I introduce myself' }, tX);
+    assert.equal(t.json.rating, 'mature');
+    assert.match(t.json.scene.events.at(-1).text, /rating=mature/);
+  });
+
+  await test('worlds are isolated and only listed to people connected to them', async () => {
+    const stranger = await newPlayer('Stranger');
+    const list = (await api('GET', '/worlds', undefined, stranger)).json as J[];
+    assert.deepEqual(list.map((w) => w.id), ['lantern_coast']);
+    const mine = (await api('GET', '/worlds', undefined, tW)).json as J[];
+    assert.ok(mine.some((w) => w.id === 'lantern_coast') && mine.some((w) => w.id === hubId()));
+    assert.equal((await api('GET', '/worlds/by-code/ZZZZZZ', undefined, stranger)).status, 404);
+    assert.equal((await api('POST', '/characters', { worldId: 'nope', name: 'Nobody', concept: 'lost soul', stats: STATS }, stranger)).status, 404);
+  });
+
   console.log(`\nAll ${passed} checks passed.`);
 } catch {
   console.error('\nSmoke test failed.');

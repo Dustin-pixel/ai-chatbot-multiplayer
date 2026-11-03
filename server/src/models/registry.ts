@@ -129,6 +129,44 @@ function mockProvider(): Provider {
           quest_updates: [],
         });
       }
+      if (system.includes('WORLD ARCHITECT')) {
+        const ref = /REFERENCE: (.*)/.exec(user)?.[1] ?? 'Mock';
+        const lab = (label: string, hint: string) => ({ label, hint });
+        return JSON.stringify({
+          recognized: !/unknown/i.test(ref),
+          name: `${ref} Realm`,
+          premise: `A test world inspired by ${ref}.`,
+          tone: 'Test tone.',
+          rules: 'Powers cost stamina.',
+          stat_labels: { might: lab('Power', 'Raw force'), finesse: lab('Technique', 'Skill'), wits: lab('Cunning', 'Tactics'), charm: lab('Presence', 'Aura') },
+          // Deliberately messy: one-way exits, a stranded room, a bad exit id, an NPC in a missing room.
+          locations: [
+            { id: 'Academy Gate', name: 'Academy Gate', description: 'The hub.', exits: ['courtyard'] },
+            { id: 'courtyard', name: 'Courtyard', description: 'Open yard.', exits: ['academy_gate', 'library'] },
+            { id: 'library', name: 'Library', description: 'Quiet.', exits: [] },
+            { id: 'cellar', name: 'Cellar', description: 'Dark.', exits: ['nonexistent'] },
+          ],
+          npcs: [
+            { id: 'sensei', name: 'Sensei', description: 'A teacher.', location: 'courtyard', disposition: 'friendly', notes: '' },
+            { id: 'ghost', name: 'Ghost', description: 'Spooky.', location: 'nowhere', disposition: 'wary', notes: '' },
+          ],
+          facts: ['A test fact.'],
+        });
+      }
+      if (system.includes('CHARACTER ADVISOR')) {
+        return JSON.stringify({
+          name: null,
+          stats: { might: 3, finesse: 3, wits: 3, charm: 3 }, // sums to 12: must be normalised to 6
+          abilities: [
+            { name: 'Shadow Step', description: 'Slip between shadows.', limit: 'Only in dim light.' },
+            { name: 'Second', description: 'b', limit: '' },
+            { name: 'Third', description: 'c', limit: 'x' },
+            { name: 'Fourth', description: 'd', limit: 'y' },
+          ],
+          items: ['a', 'b', 'c', 'd', 'e'],
+          note: 'Fits the concept.',
+        });
+      }
       if (system.includes('MEMORY KEEPER')) return 'Mock memory summary.';
       const rating = /SCENE RATING: (\w+)/.exec(system)?.[1]?.toLowerCase() ?? '?';
       return `[mock narration | rating=${rating}] The world responds.`;

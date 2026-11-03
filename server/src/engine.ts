@@ -11,6 +11,7 @@ import {
   getCharacter,
   getLocation,
   getPlayer,
+  getWorld,
   markSummarized,
   npcsAt,
   oldestUnsummarized,
@@ -24,8 +25,8 @@ import {
 } from './db.ts';
 import { getModel, listAvailable, providerFor, type ModelEntry } from './models/registry.ts';
 import { EXTRACTOR_SYSTEM, SUMMARY_SYSTEM, narratorSystemPrompt } from './prompts.ts';
-import { STARTER_ITEMS } from './seed.ts';
-import type { Character, EventRow, Player, Rating, Stats } from './types.ts';
+import { BUILTIN_WORLD, STARTER_ITEMS } from './seed.ts';
+import type { Ability, Character, EventRow, Player, Rating, Stats, World } from './types.ts';
 
 export class HttpError extends Error {
   status: number;
@@ -53,26 +54,32 @@ function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return next;
 }
 const inFlight = new Set<string>();
-const turnTimes = new Map<string, number[]>();
+const hits = new Map<string, number[]>();
 
-function checkRateLimit(playerId: string): void {
-  const cutoff = Date.now() - 60_000;
-  const times = (turnTimes.get(playerId) ?? []).filter((t) => t > cutoff);
-  if (times.length >= config.turnsPerMinute) throw new HttpError(429, 'Slow down a little: too many turns this minute.');
+/** Sliding-window limiter: throws 429 if `key` was used `max` times in the last `windowMs`. */
+export function limit(key: string, max: number, windowMs: number): void {
+  const cutoff = Date.now() - windowMs;
+  const times = (hits.get(key) ?? []).filter((t) => t > cutoff);
+  if (times.length >= max) throw new HttpError(429, 'Slow down a little: too many requests.');
   times.push(Date.now());
-  turnTimes.set(playerId, times);
+  hits.set(key, times);
 }
 
 // ---------------------------------------------------------------------------
 // Ratings & model routing
 // ---------------------------------------------------------------------------
-export function sceneSettings(locationId: string): { rating: Rating; xcard: boolean; blocked: string[] } {
+export function sceneSettings(locationId: string): { rating: Rating; xcard: boolean; blocked: string[]; world: World } {
+  const loc = getLocation(locationId);
+  const world = loc ? getWorld(loc.world_id) : undefined;
+  if (!world) throw new HttpError(500, 'This location does not belong to a world.');
   const here = charactersAt(locationId);
   const players = [...new Set(here.map((c) => c.player_id))].map((id) => getPlayer(id)).filter((p): p is Player => Boolean(p));
   const everyoneOptedIn = players.length > 0 && players.every((p) => p.adult_content === 1 && p.age_verified === 1);
   const cap = activeCap(locationId);
   const blocked = [...new Set(players.flatMap((p) => p.blocked_themes))];
-  return { rating: everyoneOptedIn && !cap ? 'adult' : 'mature', xcard: cap !== null, blocked };
+  // Adult needs: every player opted in, no X-card active, AND a world that allows it (set by code, never the model).
+  const rating: Rating = everyoneOptedIn && !cap && world.max_rating === 'adult' ? 'adult' : 'mature';
+  return { rating, xcard: cap !== null, blocked, world };
 }
 
 /**
@@ -100,9 +107,25 @@ export function resolveModel(requestedId: string | null, rating: Rating): { mode
 // ---------------------------------------------------------------------------
 // Characters
 // ---------------------------------------------------------------------------
-const clean = (s: string, max: number) => s.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+export const clean = (s: string, max: number) => s.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 
-export function startCharacter(player: Player, input: { name: unknown; concept: unknown; stats: unknown }): Character {
+export function parseAbilities(v: unknown): Ability[] {
+  if (!Array.isArray(v)) return [];
+  return v
+    .filter((x): x is Record<string, unknown> => typeof x === 'object' && x !== null)
+    .slice(0, 3)
+    .map((a) => ({
+      name: typeof a.name === 'string' ? clean(a.name, 40) : '',
+      description: typeof a.description === 'string' ? clean(a.description, 220) : '',
+      limit: (typeof a.limit === 'string' ? clean(a.limit, 160) : '') || 'Costs effort; overuse leaves you drained.',
+    }))
+    .filter((a) => a.name);
+}
+
+export function startCharacter(
+  player: Player,
+  input: { name: unknown; concept: unknown; stats: unknown; worldId?: unknown; abilities?: unknown; items?: unknown },
+): Character {
   const name = typeof input.name === 'string' ? clean(input.name, 30) : '';
   const concept = typeof input.concept === 'string' ? clean(input.concept, 160) : '';
   if (name.length < 2) throw new HttpError(400, 'Character name must be at least 2 characters.');
@@ -112,14 +135,19 @@ export function startCharacter(player: Player, input: { name: unknown; concept: 
   const vals = Object.values(stats);
   if (!vals.every((v) => Number.isInteger(v) && v >= 0 && v <= 3) || vals.reduce((a, b) => a + b, 0) !== 6)
     throw new HttpError(400, 'Stats (might, finesse, wits, charm) must each be 0-3 and add up to 6.');
-  const loc = getLocation(config.startLocation);
-  if (!loc) throw new HttpError(500, 'World is not seeded.');
-  const ch = createCharacter(player.id, name, concept, stats, loc.id, STARTER_ITEMS);
+  const world = getWorld(typeof input.worldId === 'string' && input.worldId ? input.worldId : BUILTIN_WORLD);
+  if (!world) throw new HttpError(404, 'That world does not exist.');
+  const loc = getLocation(world.start_location);
+  if (!loc) throw new HttpError(500, 'World has no starting location.');
+  const items = Array.isArray(input.items)
+    ? input.items.filter((x): x is string => typeof x === 'string').map((x) => clean(x, 40)).filter(Boolean).slice(0, 4)
+    : [];
+  const ch = createCharacter(player.id, world.id, name, concept, stats, parseAbilities(input.abilities), loc.id, items.length ? items : STARTER_ITEMS);
   addEvent({
     location_id: loc.id,
     character_id: ch.id,
     kind: 'arrive',
-    narration: `You arrive at ${loc.name}. ${loc.description}`,
+    narration: `Welcome to ${world.name}. ${world.premise}\n\nYou arrive at ${loc.name}. ${loc.description}`.trim(),
     observable: `${ch.name} arrives.`,
   });
   return ch;
@@ -163,7 +191,17 @@ export function buildScene(characterId: string, since = 0) {
   const settings = sceneSettings(loc.id);
   const feed = toFeed(feedFor(me, since), me);
   return {
-    character: { id: me.id, name: me.name, concept: me.concept, stats: me.stats, hp: me.hp, max_hp: me.max_hp, inventory: me.inventory },
+    world: { id: settings.world.id, code: settings.world.code, name: settings.world.name, maxRating: settings.world.max_rating, statLabels: settings.world.stat_labels },
+    character: {
+      id: me.id,
+      name: me.name,
+      concept: me.concept,
+      stats: me.stats,
+      abilities: me.abilities,
+      hp: me.hp,
+      max_hp: me.max_hp,
+      inventory: me.inventory,
+    },
     location: { id: loc.id, name: loc.name, description: loc.description },
     exits: loc.exits.map((id) => ({ id, name: getLocation(id)?.name ?? id })),
     present: charactersAt(loc.id)
@@ -185,7 +223,8 @@ function buildContext(me: Character, roll: number, action: string): string {
   const loc = getLocation(me.location_id) as NonNullable<ReturnType<typeof getLocation>>;
   const npcs = npcsAt(loc.id);
   const others = charactersAt(loc.id).filter((c) => c.id !== me.id);
-  const facts = factsFor(loc.id);
+  const world = getWorld(loc.world_id);
+  const facts = factsFor(loc.world_id, loc.id);
   const quests = questsFor(me.id);
   const recent = recentEventsAt(loc.id, 10)
     .map((e) => {
@@ -197,19 +236,24 @@ function buildContext(me: Character, roll: number, action: string): string {
     .filter(Boolean)
     .join('\n');
   const st = me.stats;
+  const lb = world?.stat_labels;
   return [
+    world ? `WORLD: ${world.name}: ${world.premise}\nTONE: ${world.tone}\nWORLD RULES: ${world.rules}` : '',
     `LOCATION: ${loc.name}: ${loc.description}`,
     `EXITS: ${loc.exits.map((id) => `${id} (${getLocation(id)?.name ?? id})`).join(', ') || 'none'}`,
     `NPCS HERE:\n${npcs.map((n) => `- [${n.id}] ${n.name} (${n.disposition}): ${n.description} Notes: ${n.notes}`).join('\n') || '- none'}`,
     `OTHER PLAYER CHARACTERS HERE (do not control them):\n${others.map((c) => `- ${c.name}: ${c.concept}; ${condition(c)}`).join('\n') || '- none'}`,
     `WORLD NOTES:\n${facts.map((f) => `- ${f}`).join('\n') || '- none'}`,
-    `ACTING CHARACTER: ${me.name}: ${me.concept}. Might +${st.might}, Finesse +${st.finesse}, Wits +${st.wits}, Charm +${st.charm}. HP ${me.hp}/${me.max_hp} (${condition(me)}). Carrying: ${me.inventory.join(', ') || 'nothing'}.`,
+    `ACTING CHARACTER: ${me.name}: ${me.concept}. ${lb ? `${lb.might.label} +${st.might}, ${lb.finesse.label} +${st.finesse}, ${lb.wits.label} +${st.wits}, ${lb.charm.label} +${st.charm}` : `Might +${st.might}, Finesse +${st.finesse}, Wits +${st.wits}, Charm +${st.charm}`}. HP ${me.hp}/${me.max_hp} (${condition(me)}). Carrying: ${me.inventory.join(', ') || 'nothing'}.`,
+    `ABILITIES (honour the limits): ${me.abilities.map((a) => `${a.name}: ${a.description} LIMIT: ${a.limit}`).join(' | ') || 'none beyond ordinary skills'}`,
     `CHARACTER MEMORY: ${me.summary || 'none yet'}`,
     `QUESTS: ${quests.map((q) => `${q.title} [${q.status}] ${q.note}`).join('; ') || 'none'}`,
     `RECENT SCENE (oldest first):\n${recent || '- nothing yet'}`,
     `HIDDEN d20 ROLL FOR THIS TURN: ${roll}`,
     `PLAYER ACTION (${me.name}): "${action}"`,
-  ].join('\n\n');
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -261,7 +305,7 @@ export async function takeTurn(player: Player, characterId: string, rawAction: u
   if (!first) throw new HttpError(404, 'Character not found.');
   if (first.player_id !== player.id) throw new HttpError(403, 'That is not your character.');
   if (inFlight.has(characterId)) throw new HttpError(409, 'Your last action is still resolving.');
-  checkRateLimit(player.id);
+  limit(`turn:${player.id}`, config.turnsPerMinute, 60_000);
 
   inFlight.add(characterId);
   try {
@@ -281,7 +325,7 @@ export async function takeTurn(player: Player, characterId: string, rawAction: u
       let narration = (
         await narrator.complete(
           [
-            { role: 'system', content: narratorSystemPrompt(rating, settings.blocked, settings.xcard) },
+            { role: 'system', content: narratorSystemPrompt(rating, settings.blocked, settings.xcard, settings.world) },
             { role: 'user', content: buildContext(me, roll, action) },
           ],
           { maxTokens: 700, temperature: 0.9 },
@@ -325,7 +369,7 @@ export async function takeTurn(player: Player, characterId: string, rawAction: u
 
       const validNpcs = new Set(npcsAt(loc.id).map((n) => n.id));
       for (const u of ex.npcUpdates) if (validNpcs.has(u.id)) updateNpc(u.id, { disposition: u.disposition || undefined, note: u.note || undefined });
-      for (const f of ex.facts) addFact(loc.id, f);
+      for (const f of ex.facts) addFact(loc.world_id, loc.id, f);
       for (const q of ex.questUpdates)
         if (q.title && ['active', 'done', 'failed'].includes(q.status)) upsertQuest(me.id, q.title, q.status, q.note);
 

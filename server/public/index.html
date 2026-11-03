@@ -84,6 +84,14 @@
   .row.sel { border-color: var(--accent); }
   .row .g { flex: 1; } .row small { display: block; color: var(--dim); font-size: 12px; }
   .row input[type=checkbox] { width: 24px; height: 24px; accent-color: var(--adult); }
+  .hint { color: var(--dim); font-size: 13px; margin: 8px 0 0; }
+  .btn.alt { background: transparent; color: var(--accent); border: 1px solid var(--accent); margin-top: 12px; }
+  .banner { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 16px; }
+  .banner b { color: var(--accent); } .banner p { margin: 6px 0 0; font-size: 14px; color: var(--dim); }
+  .link { background: none; border: 0; color: var(--dim); text-decoration: underline; padding: 0; margin-bottom: 8px; }
+  .ability { background: var(--panel); border-radius: 10px; padding: 10px 12px; margin-top: 8px; font-size: 14px; }
+  .ability b { color: var(--accent); } .ability small { display: block; color: var(--dim); margin-top: 2px; }
+  .codebox { text-transform: uppercase; letter-spacing: 3px; text-align: center; }
 </style>
 </head>
 <body>
@@ -102,13 +110,37 @@
   <button id="enter" class="btn">Enter the world</button>
 </section>
 
+<!-- 1b. World picker -->
+<section id="worlds" class="screen" hidden>
+  <h1>Choose a world</h1>
+  <p class="sub">Join a world, or build one from a story you love.</p>
+  <div id="worldList"></div>
+
+  <div class="sec">Build a world from a story</div>
+  <label for="wref">Which story? (series, book, game…)</label>
+  <input id="wref" type="text" maxlength="80" placeholder="e.g. Jujutsu Kaisen, My Hero Academia">
+  <label for="wnotes">Notes (optional)</label>
+  <textarea id="wnotes" rows="3" maxlength="800" placeholder="e.g. Start at the very beginning, in the first school year"></textarea>
+  <p class="hint">Worlds built from other stories are always non-explicit (scenes fade to black), because those casts often include teenagers.</p>
+  <div id="worldErr" class="error"></div>
+  <button id="buildWorld" class="btn">Build world</button>
+
+  <div class="sec">Have a share code?</div>
+  <input id="wcode" class="codebox" type="text" maxlength="6" placeholder="ABC123" autocapitalize="characters" autocomplete="off">
+  <button id="joinCode" class="btn alt">Join with code</button>
+</section>
+
 <!-- 2. Character creation -->
 <section id="create" class="screen" hidden>
+  <button class="link" id="backWorlds">← Change world</button>
+  <div class="banner" id="worldBanner"></div>
   <h1>Who are you?</h1>
   <label for="cname">Character name</label>
   <input id="cname" type="text" maxlength="30" placeholder="Mira Thornwick">
   <label for="cconcept">Concept</label>
   <textarea id="cconcept" rows="3" maxlength="160" placeholder="Disgraced duelist turned ferry guide, owes a dangerous favour"></textarea>
+  <button id="suggest" class="btn alt">✨ Suggest stats &amp; abilities from this concept</button>
+  <div id="suggestOut"></div>
   <label id="pointsLabel">Stats</label>
   <div id="stats"></div>
   <div id="createErr" class="error"></div>
@@ -145,6 +177,9 @@
     <div class="sec">Storyteller model</div>
     <div id="models"></div>
     <button class="row" id="defaultModel" style="justify-content:center;color:var(--dim)">Use the server default</button>
+    <div class="sec">World</div>
+    <div class="row" id="worldInfo"></div>
+    <button class="btn alt" id="newChar">New character / switch world</button>
     <button class="btn ghost" id="signout">Sign out on this device</button>
   </div>
 </dialog>
@@ -183,7 +218,7 @@
   }
 
   function show(name) {
-    for (const id of ['welcome', 'create', 'game']) $(id).hidden = id !== name;
+    for (const id of ['welcome', 'worlds', 'create', 'game']) $(id).hidden = id !== name;
     if (name !== 'game') { clearInterval(pollTimer); pollTimer = null; }
   }
 
@@ -201,22 +236,25 @@
     $('enter').disabled = true;
     try {
       const r = await api('POST', '/players', { name: $('pname').value.trim(), birthDate: $('pbirth').value });
-      token = r.token; store.set(TOKEN_KEY, token); show('create');
+      token = r.token; store.set(TOKEN_KEY, token); goToWorlds();
     } catch (e) { $('welcomeErr').textContent = e.message; }
     finally { $('enter').disabled = false; }
   };
 
   // ---------- character creation ----------
-  const STATS = [['might', 'Might', 'Force, endurance, fighting'], ['finesse', 'Finesse', 'Agility, stealth, aim'],
-                 ['wits', 'Wits', 'Perception, lore, cunning'], ['charm', 'Charm', 'Persuasion, presence, deceit']];
+  const KEYS = ['might', 'finesse', 'wits', 'charm'];
+  const DEFAULT_LABELS = { might: { label: 'Might', hint: 'Force, endurance, fighting' }, finesse: { label: 'Finesse', hint: 'Agility, stealth, aim' },
+                           wits: { label: 'Wits', hint: 'Perception, lore, cunning' }, charm: { label: 'Charm', hint: 'Persuasion, presence, deceit' } };
   const stats = { might: 2, finesse: 2, wits: 1, charm: 1 };
+  let currentWorld = null, suggestion = null;
   const used = () => Object.values(stats).reduce((a, b) => a + b, 0);
   function drawStats() {
     const box = $('stats'); box.replaceChildren();
     $('pointsLabel').textContent = 'Stats (' + (6 - used()) + ' points left)';
     $('begin').disabled = used() !== 6;
-    for (const [k, label, hint] of STATS) {
-      const row = h('div', 'stat'), nm = h('div', 'name', label); nm.append(h('small', '', hint));
+    for (const k of KEYS) {
+      const L = (currentWorld && currentWorld.statLabels && currentWorld.statLabels[k]) || DEFAULT_LABELS[k];
+      const row = h('div', 'stat'), nm = h('div', 'name', L.label); nm.append(h('small', '', L.hint));
       const minus = h('button', '', '−'), plus = h('button', '', '+');
       minus.onclick = () => { if (stats[k] > 0) { stats[k]--; drawStats(); } };
       plus.onclick = () => { if (stats[k] < 3 && used() < 6) { stats[k]++; drawStats(); } };
@@ -227,7 +265,8 @@
   $('begin').onclick = async () => {
     $('createErr').textContent = ''; $('begin').disabled = true;
     try {
-      const s = await api('POST', '/characters', { name: $('cname').value.trim(), concept: $('cconcept').value.trim(), stats });
+      const s = await api('POST', '/characters', { worldId: currentWorld ? currentWorld.id : undefined, name: $('cname').value.trim(), concept: $('cconcept').value.trim(), stats,
+        abilities: suggestion ? suggestion.abilities : [], items: suggestion ? suggestion.items : [] });
       charId = s.character.id; store.set(CHAR_KEY, charId); feed = []; lastId = 0; startGame(s);
     } catch (e) { $('createErr').textContent = e.message; }
     finally { $('begin').disabled = used() !== 6; }
@@ -318,6 +357,13 @@
   let models = [];
   function drawSettings() {
     if (!me) return;
+    const wi = $('worldInfo'); wi.replaceChildren();
+    if (scene && scene.world) {
+      const g = h('div', 'g', scene.world.name);
+      g.append(h('small', '', 'Share code: ' + scene.world.code + ' (friends can join this world with it)'));
+      g.append(h('small', '', scene.world.maxRating === 'adult' ? 'Adult scenes allowed here when everyone present opts in.' : 'Capped at mature: scenes fade to black in this world, whatever the settings.'));
+      wi.append(g);
+    }
     $('adultToggle').checked = me.adultContent;
     const box = $('models'); box.replaceChildren();
     for (const m of models) {
@@ -342,13 +388,68 @@
   $('closeSettings').onclick = () => $('settings').close();
   $('signout').onclick = () => { if (confirm('Sign out on this device? Your character stays in the world, but you will need a new account to return to it.')) signOut(); };
 
+  // ---------- worlds ----------
+  function goToWorlds() {
+    $('worldErr').textContent = '';
+    show('worlds'); loadWorlds();
+  }
+  async function loadWorlds() {
+    try {
+      const list = await api('GET', '/worlds');
+      const box = $('worldList'); box.replaceChildren();
+      for (const w of list) {
+        const b = h('button', 'row'), g = h('div', 'g', w.name);
+        g.append(h('small', '', (w.premise || '').slice(0, 120) + ((w.premise || '').length > 120 ? '…' : '')));
+        g.append(h('small', '', w.maxRating === 'adult' ? 'Adult scenes possible (opt-in)' : 'Fade-to-black only'));
+        b.append(g); b.onclick = () => chooseWorld(w); box.append(b);
+      }
+    } catch (e) { if (e.status === 401) signOut(); else $('worldErr').textContent = e.message; }
+  }
+  function chooseWorld(w) {
+    currentWorld = w; suggestion = null;
+    Object.assign(stats, { might: 2, finesse: 2, wits: 1, charm: 1 });
+    const ban = $('worldBanner'); ban.replaceChildren();
+    ban.append(h('b', '', w.name), h('p', '', w.premise || ''));
+    ban.append(h('p', '', 'Share code: ' + w.code + (w.maxRating === 'adult' ? '' : ' · scenes here fade to black')));
+    $('suggestOut').replaceChildren(); $('createErr').textContent = '';
+    drawStats(); show('create');
+  }
+  $('backWorlds').onclick = goToWorlds;
+  $('buildWorld').onclick = async () => {
+    $('worldErr').textContent = ''; const btn = $('buildWorld'); btn.disabled = true; btn.textContent = 'Building your world… (up to a minute)';
+    try {
+      chooseWorld(await api('POST', '/worlds', { reference: $('wref').value.trim(), notes: $('wnotes').value.trim() }, 120000));
+    } catch (e) { $('worldErr').textContent = e.message; }
+    finally { btn.disabled = false; btn.textContent = 'Build world'; }
+  };
+  $('joinCode').onclick = async () => {
+    $('worldErr').textContent = '';
+    try { chooseWorld(await api('GET', '/worlds/by-code/' + encodeURIComponent($('wcode').value.trim()))); }
+    catch (e) { $('worldErr').textContent = e.message; }
+  };
+  $('suggest').onclick = async () => {
+    $('createErr').textContent = ''; const btn = $('suggest'); btn.disabled = true;
+    try {
+      suggestion = await api('POST', '/worlds/' + currentWorld.id + '/suggest', { concept: $('cconcept').value.trim() }, 60000);
+      Object.assign(stats, suggestion.stats);
+      if (suggestion.name && !$('cname').value.trim()) $('cname').value = suggestion.name;
+      const out = $('suggestOut'); out.replaceChildren();
+      if (suggestion.note) out.append(h('p', 'hint', suggestion.note));
+      for (const a of suggestion.abilities) { const d = h('div', 'ability'); d.append(h('b', '', a.name), document.createTextNode(' — ' + a.description), h('small', '', 'Limit: ' + a.limit)); out.append(d); }
+      if (suggestion.items.length) out.append(h('p', 'hint', 'Starting items: ' + suggestion.items.join(', ')));
+      drawStats();
+    } catch (e) { $('createErr').textContent = e.message; }
+    finally { btn.disabled = false; }
+  };
+  $('newChar').onclick = () => { $('settings').close(); goToWorlds(); };
+
   // ---------- boot ----------
   (async () => {
     if (!token) return show('welcome');
     try {
       const mine = await api('GET', '/characters');
       const pick = mine.find((c) => c.id === charId) || mine[0];
-      if (!pick) return show('create');
+      if (!pick) return goToWorlds();
       charId = pick.id; store.set(CHAR_KEY, charId); startGame();
     } catch (e) { if (e.status === 401) signOut(); else { show('welcome'); $('welcomeErr').textContent = e.message; } }
   })();

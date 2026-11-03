@@ -9,11 +9,13 @@ A mobile AI dungeon master for several players at once. Everyone plays their own
 
 | Part | Status |
 | --- | --- |
-| Server logic (shared scenes, ratings, X-card, movement, state tracking, memory, rate limit) | **Tested**: `cd server && npm test` runs 15 end-to-end checks over real HTTP using a mock model |
+| Server logic (shared scenes, ratings, X-card, movement, state tracking, memory, rate limit) | **Tested**: `cd server && npm test` runs 23 end-to-end checks over real HTTP using a mock model |
+| Worlds from stories: plumbing (validation, map repair, caps, stat normalisation, UI flow) | **Tested** with the mock model |
+| Worlds from stories: quality of what a real model produces | **Not tested.** Depends on how well the model knows the series; expect to iterate on `WORLD_ARCHITECT_SYSTEM` in `server/src/prompts.ts` |
 | Real calls to Venice | **Not tested** (no API key or network here). Model ID `venice-uncensored-role-play` came from a third-party page; confirm it against `GET https://api.venice.ai/api/v1/models` |
 | Mobile web client (`server/public`) | **Tested** in a headless phone-sized browser: two players sign up, see each other, act, and change settings |
 | Dockerfile / `render.yaml` | **Not tested** (never deployed). Expect to adjust on first deploy |
-| Native Expo app (`app/`) | **Written but never built or run**. Optional; the web client does the same job |
+| Native Expo app (`app/`) | **Written but never built or run**, and it does **not** have the worlds feature yet. Use the web client |
 
 ## Play from your phone with no computer
 
@@ -56,6 +58,20 @@ On a real phone `localhost` means the phone itself, so use your computer's LAN I
 - **Code owns the numbers.** The server rolls the d20, validates HP/inventory/moves/NPC changes the model reports, and only allows movement along real exits. A second model call extracts structured state from the narration.
 - **Memory.** After 24 turns, older ones are condensed into a short per-character summary.
 
+## Worlds from stories (JJK, My Hero Academia, anything)
+
+On the world screen, name a story (and optionally add notes like "start at the very beginning"). The storyteller model designs a playable world from it: premise, tone, **power-system rules with built-in costs and limits**, renamed stats (e.g. Might becomes Power), 6-8 connected locations, notable NPCs and story hooks. Everything the model returns is validated and repaired by the server (unique ids, real two-way exits, no stranded rooms, NPCs placed in real rooms, length caps).
+
+Then describe your character ("calm swordsman with a dangerous secret") and tap **Suggest stats & abilities**. The advisor proposes a 6-point stat spread (re-balanced by code if the model gets the maths wrong) plus 1-3 abilities, each with a concrete limit the narrator must honour, and a few starting items. You can edit the stats before you begin. Characters start at an early, limited point, so nobody starts as a canon powerhouse.
+
+Each world has a 6-character **share code** (shown in Settings). Friends enter it to join the same world and meet in it. Worlds are listed only to people who own them or already have a character there; other worlds stay separate from each other.
+
+Notes:
+- Worlds are written in the model's own words; nothing is copied from the source. If the model doesn't recognise a story it says so, and you'll be asked for notes.
+- **Worlds built from other stories are always capped at "mature"** (violence and horror OK, sex fades to black), whatever anyone's settings say. The cap is set by server code, not by the model. Those casts often include teenagers and a model can't reliably tell who is who. The narrator prompt also forbids any sexual or romantic-physical content involving characters who are minors in the source, at every rating.
+- The built-in Lantern Coast world is the only one that allows adult scenes (when every player present opts in).
+- Limits: 3 world builds per hour per player, 10 stat suggestions per minute.
+
 ## Models
 
 `server/models.json` lists models. Venice Role-Play Uncensored is the default; Venice general, a local OpenAI-compatible server (Ollama, llama.cpp, vLLM), OpenRouter and Claude are included but disabled until enabled and keyed. Add any OpenAI-compatible endpoint by copying an entry. Players pick their storyteller in Settings.
@@ -68,6 +84,7 @@ Each model has `adultContent: true/false`. **Adult-rated scenes are only ever ro
 - **Opt-in per player:** adult content is off by default, and a scene is only "adult" when **every** player in it has opted in. Otherwise it is "mature" (violence/horror OK, sex fades to black).
 - **X-card:** the ✕ button caps the location at "mature" for 30 minutes and tells the narrator to steer away, no explanation needed.
 - **Blocked themes:** per-player list, merged across everyone present.
+- **World cap:** story-based worlds can never be rated above "mature" (see above).
 - **Hard limits in the prompt:** characters in sexual contexts are adults; no sexual violence; sexual content involving another player's character requires them to have acted willingly.
 - Bystanders never receive a player's private narration, only the sanitised `observable` line.
 

@@ -21,8 +21,10 @@ export interface Player {
 export interface Character {
   id: string;
   player_id: string;
+  world_id: string;
   name: string;
   concept: string;
+  abilities: Ability[];
   stats: Stats;
   hp: number;
   max_hp: number;
@@ -34,6 +36,7 @@ export interface Character {
 
 export interface Location {
   id: string;
+  world_id: string;
   name: string;
   description: string;
   exits: string[];
@@ -41,6 +44,7 @@ export interface Location {
 
 export interface Npc {
   id: string;
+  world_id: string;
   name: string;
   description: string;
   location_id: string;
@@ -74,4 +78,42 @@ export interface CompleteOptions {
 
 export interface Provider {
   complete(messages: ChatMessage[], opts: CompleteOptions): Promise<string>;
+}
+
+export interface Ability {
+  name: string;
+  description: string;
+  /** A concrete cost or restriction the narrator must honour. */
+  limit: string;
+}
+
+export interface StatLabel {
+  label: string;
+  hint: string;
+}
+export type StatLabels = Record<keyof Stats, StatLabel>;
+
+export const DEFAULT_STAT_LABELS: StatLabels = {
+  might: { label: 'Might', hint: 'Force, endurance, fighting' },
+  finesse: { label: 'Finesse', hint: 'Agility, stealth, aim' },
+  wits: { label: 'Wits', hint: 'Perception, lore, cunning' },
+  charm: { label: 'Charm', hint: 'Persuasion, presence, deceit' },
+};
+
+export interface World {
+  id: string;
+  /** Short share code: anyone with it can create a character in this world. */
+  code: string;
+  name: string;
+  /** The story this world was built from ("" for the built-in world). */
+  reference: string;
+  premise: string;
+  tone: string;
+  rules: string;
+  stat_labels: StatLabels;
+  /** Highest content rating allowed here. Set by server code, never by the model. */
+  max_rating: Rating;
+  start_location: string;
+  owner_player_id: string | null;
+  created_at: number;
 }

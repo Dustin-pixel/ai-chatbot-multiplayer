@@ -2,10 +2,20 @@ import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { config } from './config.ts';
-import { createPlayer, getCharacter, getPlayerByTokenHash, listCharacters, updatePlayerSettings } from './db.ts';
+import {
+  createPlayer,
+  getCharacter,
+  getPlayerByTokenHash,
+  getWorld,
+  getWorldByCode,
+  listCharacters,
+  listWorldsFor,
+  updatePlayerSettings,
+} from './db.ts';
 import { HttpError, buildScene, startCharacter, takeTurn, xcard } from './engine.ts';
 import { getModel, listAvailable } from './models/registry.ts';
-import type { Player } from './types.ts';
+import { generateWorld, suggestCharacter } from './worldgen.ts';
+import type { Player, World } from './types.ts';
 
 interface Ctx {
   params: Record<string, string>;
@@ -59,6 +69,18 @@ const publicPlayer = (p: Player) => ({
   modelId: p.model_id,
 });
 
+const worldView = (w: World, viewer: Player) => ({
+  id: w.id,
+  code: w.code,
+  name: w.name,
+  premise: w.premise,
+  tone: w.tone,
+  reference: w.reference,
+  maxRating: w.max_rating,
+  statLabels: w.stat_labels,
+  mine: w.owner_player_id === viewer.id,
+});
+
 function ageOn(birthDate: string, today = new Date()): number {
   const [y, m, d] = birthDate.split('-').map(Number) as [number, number, number];
   let age = today.getUTCFullYear() - y;
@@ -109,12 +131,38 @@ route('PATCH', '/players/me/settings', true, (ctx) => {
   return publicPlayer(updatePlayerSettings(p.id, patch));
 });
 
+route('GET', '/worlds', true, (ctx) => listWorldsFor(me(ctx).id).map((w) => worldView(w, me(ctx))));
+
+route('GET', '/worlds/by-code/:code', true, (ctx) => {
+  const w = getWorldByCode(ctx.params.code ?? '');
+  if (!w) throw new HttpError(404, 'No world with that code.');
+  return worldView(w, me(ctx));
+});
+
+// Slow (one LLM call): builds a playable world from a story. Generated worlds are capped at "mature".
+route('POST', '/worlds', true, async (ctx) =>
+  worldView(await generateWorld(me(ctx), ctx.body.reference, ctx.body.notes), me(ctx)),
+);
+
+route('POST', '/worlds/:id/suggest', true, async (ctx) => {
+  const w = getWorld(ctx.params.id ?? '');
+  if (!w) throw new HttpError(404, 'World not found.');
+  return suggestCharacter(me(ctx), w, ctx.body.concept);
+});
+
 route('GET', '/characters', true, (ctx) =>
   listCharacters(me(ctx).id).map((c) => ({ id: c.id, name: c.name, concept: c.concept, hp: c.hp, max_hp: c.max_hp, location_id: c.location_id })),
 );
 
 route('POST', '/characters', true, (ctx) => {
-  const ch = startCharacter(me(ctx), { name: ctx.body.name, concept: ctx.body.concept, stats: ctx.body.stats });
+  const ch = startCharacter(me(ctx), {
+    name: ctx.body.name,
+    concept: ctx.body.concept,
+    stats: ctx.body.stats,
+    worldId: ctx.body.worldId,
+    abilities: ctx.body.abilities,
+    items: ctx.body.items,
+  });
   return buildScene(ch.id, 0);
 });
 
